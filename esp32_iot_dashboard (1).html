@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html lang="th" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ESP32 HiveMQ Cloud Traffic Light Dashboard</title>
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#eff6ff',
+              500: '#3b82f6',
+              600: '#2563eb',
+              900: '#1e3a8a',
+            },
+            darkBg: '#0b0f19',
+            cardBg: '#111827',
+            cardBorder: '#1f2937'
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Font Awesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  
+  <!-- MQTT.js over WebSocket CDN -->
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+    }
+    .custom-scrollbar::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-track {
+      background: #111827;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+      background: #374151;
+      border-radius: 9999px;
+    }
+    /* Lamp Glow animations */
+    .lamp-glow-red {
+      box-shadow: 0 0 30px rgba(239, 68, 68, 0.7), inset 0 0 15px rgba(255, 255, 255, 0.6);
+    }
+    .lamp-glow-yellow {
+      box-shadow: 0 0 30px rgba(234, 179, 8, 0.75), inset 0 0 15px rgba(255, 255, 255, 0.6);
+    }
+    .lamp-glow-green {
+      box-shadow: 0 0 30px rgba(34, 197, 94, 0.75), inset 0 0 15px rgba(255, 255, 255, 0.6);
+    }
+  </style>
+</head>
+<body class="bg-darkBg text-slate-100 min-h-screen flex flex-col antialiased selection:bg-brand-500 selection:text-white">
+
+  <!-- Navbar -->
+  <header class="border-b border-cardBorder bg-cardBg/80 backdrop-blur-md sticky top-0 z-40 px-4 lg:px-8 py-3.5 flex items-center justify-between">
+    <div class="flex items-center space-x-3">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-brand-600 to-indigo-500 flex items-center justify-center text-white shadow-lg shadow-brand-500/20">
+        <i class="fa-solid fa-microchip text-xl"></i>
+      </div>
+      <div>
+        <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
+          ESP32 LED & Sensors Control
+          <span class="text-xs px-2 py-0.5 rounded-full bg-brand-500/10 text-brand-400 border border-brand-500/20 font-medium">HiveMQ Cloud</span>
+        </h1>
+        <p class="text-xs text-slate-400 font-mono">D2 (Red) • D4 (Yellow) • D5 (Green)</p>
+      </div>
+    </div>
+
+    <!-- Status & Settings -->
+    <div class="flex items-center gap-3">
+      <!-- Status Badge -->
+      <div id="statusBadge" class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-medium transition-all duration-300">
+        <span class="relative flex h-2 w-2">
+          <span id="pingDot" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+          <span id="statusDot" class="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+        </span>
+        <span id="statusText">Connecting...</span>
+      </div>
+
+      <!-- Settings Button -->
+      <button onclick="toggleConfigModal()" class="p-2 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white transition border border-cardBorder text-sm" title="MQTT Settings">
+        <i class="fa-solid fa-sliders"></i>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Content Layout -->
+  <main class="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
+
+    <!-- KPI Metric Cards Grid -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
+      
+      <!-- Temperature Card -->
+      <div class="relative overflow-hidden bg-cardBg border border-cardBorder rounded-2xl p-5 shadow-sm hover:border-slate-700 transition">
+        <div class="flex items-center justify-between text-slate-400 mb-3">
+          <span class="text-xs font-semibold uppercase tracking-wider">อุณหภูมิ (Temperature)</span>
+          <div class="w-8 h-8 rounded-lg bg-orange-500/10 text-orange-400 flex items-center justify-center">
+            <i class="fa-solid fa-temperature-three-quarters"></i>
+          </div>
+        </div>
+        <div class="flex items-baseline gap-1">
+          <span id="tempValue" class="text-4xl font-extrabold text-white tracking-tight">--</span>
+          <span class="text-xl font-medium text-slate-400">°C</span>
+        </div>
+        <div class="mt-4">
+          <div class="flex justify-between text-xs text-slate-400 mb-1">
+            <span>สภาพอากาศ</span>
+            <span id="tempStatus">รอข้อมูล...</span>
+          </div>
+          <div class="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+            <div id="tempBar" class="bg-gradient-to-r from-amber-500 to-orange-500 h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Humidity Card -->
+      <div class="relative overflow-hidden bg-cardBg border border-cardBorder rounded-2xl p-5 shadow-sm hover:border-slate-700 transition">
+        <div class="flex items-center justify-between text-slate-400 mb-3">
+          <span class="text-xs font-semibold uppercase tracking-wider">ความชื้น (Humidity)</span>
+          <div class="w-8 h-8 rounded-lg bg-sky-500/10 text-sky-400 flex items-center justify-center">
+            <i class="fa-solid fa-droplet"></i>
+          </div>
+        </div>
+        <div class="flex items-baseline gap-1">
+          <span id="humValue" class="text-4xl font-extrabold text-white tracking-tight">--</span>
+          <span class="text-xl font-medium text-slate-400">%</span>
+        </div>
+        <div class="mt-4">
+          <div class="flex justify-between text-xs text-slate-400 mb-1">
+            <span>ระดับสัมพัทธ์</span>
+            <span id="humStatus">รอข้อมูล...</span>
+          </div>
+          <div class="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+            <div id="humBar" class="bg-gradient-to-r from-blue-500 to-sky-400 h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Wi-Fi Signal Card -->
+      <div class="relative overflow-hidden bg-cardBg border border-cardBorder rounded-2xl p-5 shadow-sm hover:border-slate-700 transition">
+        <div class="flex items-center justify-between text-slate-400 mb-3">
+          <span class="text-xs font-semibold uppercase tracking-wider">สัญญาณ Wi-Fi (RSSI)</span>
+          <div class="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
+            <i class="fa-solid fa-wifi" id="wifiIcon"></i>
+          </div>
+        </div>
+        <div class="flex items-baseline gap-1">
+          <span id="rssiValue" class="text-4xl font-extrabold text-white tracking-tight">--</span>
+          <span class="text-xl font-medium text-slate-400">dBm</span>
+        </div>
+        <div class="mt-4">
+          <div class="flex justify-between text-xs text-slate-400 mb-1">
+            <span>ความแรงสัญญาณ</span>
+            <span id="wifiStatus">กำลังรอข้อมูล...</span>
+          </div>
+          <div class="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+            <div id="rssiBar" class="bg-emerald-500 h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Device State & Last Seen -->
+      <div class="relative overflow-hidden bg-cardBg border border-cardBorder rounded-2xl p-5 shadow-sm hover:border-slate-700 transition">
+        <div class="flex items-center justify-between text-slate-400 mb-3">
+          <span class="text-xs font-semibold uppercase tracking-wider">สถานะบอร์ด ESP32</span>
+          <div class="w-8 h-8 rounded-lg bg-purple-500/10 text-purple-400 flex items-center justify-center">
+            <i class="fa-solid fa-tower-broadcast"></i>
+          </div>
+        </div>
+        <div class="flex items-center gap-2">
+          <span id="deviceOnlineBadge" class="px-2.5 py-1 text-sm font-semibold rounded-lg bg-amber-500/20 text-amber-300 border border-amber-500/30">
+            Waiting Heartbeat
+          </span>
+        </div>
+        <div class="mt-4 text-xs text-slate-400 space-y-1">
+          <div class="flex justify-between">
+            <span>รับข้อมูลล่าสุด:</span>
+            <span id="lastSeen" class="text-slate-200 font-mono">--:--:--</span>
+          </div>
+          <div class="flex justify-between">
+            <span>ความถี่ส่งข้อมูล:</span>
+            <span class="text-slate-400">ทุกๆ 5 วินาที</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- 3-Channel LED Traffic Light Control Panel -->
+    <div class="bg-cardBg border border-cardBorder rounded-2xl p-6 shadow-sm">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-cardBorder">
+        <div>
+          <h2 class="text-lg font-bold text-white flex items-center gap-2.5">
+            <i class="fa-solid fa-traffic-light text-amber-400"></i>
+            แผงควบคุมไฟ LED 3 สี (D2, D4, D5)
+          </h2>
+          <p class="text-xs text-slate-400 mt-1">
+            คลิกสวิตช์เพื่อส่งคำสั่งไปยัง Topic: <code class="text-brand-300 bg-slate-900 px-1.5 py-0.5 rounded border border-cardBorder font-mono">home/esp32/command</code>
+          </p>
+        </div>
+
+        <!-- Master Switch Buttons -->
+        <div class="flex items-center gap-2.5">
+          <button onclick="sendAllLeds('ALL_ON')" class="py-2 px-4 rounded-xl font-semibold text-xs bg-emerald-600/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-600/30 active:scale-95 transition flex items-center gap-2">
+            <i class="fa-solid fa-power-off"></i> เปิดทุกดวง (ALL ON)
+          </button>
+          <button onclick="sendAllLeds('ALL_OFF')" class="py-2 px-4 rounded-xl font-semibold text-xs bg-rose-600/20 text-rose-300 border border-rose-500/30 hover:bg-rose-600/30 active:scale-95 transition flex items-center gap-2">
+            <i class="fa-solid fa-stop"></i> ปิดทุกดวง (ALL OFF)
+          </button>
+        </div>
+      </div>
+
+      <!-- 3 Individual LED Cards -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-5 mt-6">
+        
+        <!-- RED LED (Pin 2) -->
+        <div class="bg-slate-900/90 border border-cardBorder rounded-2xl p-5 flex flex-col justify-between hover:border-red-500/30 transition">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-3">
+              <!-- Glowing Indicator Lamp -->
+              <div id="redLampIndicator" class="w-8 h-8 rounded-full bg-red-950 border-2 border-red-800 flex items-center justify-center transition-all duration-300">
+                <i class="fa-solid fa-lightbulb text-red-700 text-sm" id="redLampIcon"></i>
+              </div>
+              <div>
+                <h3 class="text-sm font-bold text-white flex items-center gap-1.5">
+                  ไฟสีแดง (Red LED)
+                  <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 border border-red-500/30">D2</span>
+                </h3>
+                <p id="redStatusText" class="text-xs text-slate-400">สถานะ: ปิด (OFF)</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="mt-6 flex items-center justify-between pt-4 border-t border-cardBorder/60">
+            <span class="text-xs text-slate-400 font-medium">สลับสถานะเปิด-ปิด</span>
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input type="checkbox" id="redToggle" onchange="toggleSingleLed('red', this.checked)" class="sr-only peer">
+              <div class="w-12 h-6 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-red-600"></div>
+            </label>
+          </div>
+        </div>
+
+        <!-- YELLOW LED (Pin 4) -->
+        <div class="bg-slate-900/90 border border-cardBorder rounded-2xl p-5 flex flex-col justify-between hover:border-amber-500/30 transition">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-3">
+              <!-- Glowing Indicator Lamp -->
+              <div id="yellowLampIndicator" class="w-8 h-8 rounded-full bg-amber-950 border-2 border-amber-800 flex items-center justify-center transition-all duration-300">
+                <i class="fa-solid fa-lightbulb text-amber-700 text-sm" id="yellowLampIcon"></i>
+              </div>
+              <div>
+                <h3 class="text-sm font-bold text-white flex items-center gap-1.5">
+                  ไฟสีเหลือง (Yellow LED)
+                  <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30">D4</span>
+                </h3>
+                <p id="yellowStatusText" class="text-xs text-slate-400">สถานะ: ปิด (OFF)</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="mt-6 flex items-center justify-between pt-4 border-t border-cardBorder/60">
+            <span class="text-xs text-slate-400 font-medium">สลับสถานะเปิด-ปิด</span>
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input type="checkbox" id="yellowToggle" onchange="toggleSingleLed('yellow', this.checked)" class="sr-only peer">
+              <div class="w-12 h-6 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500"></div>
+            </label>
+          </div>
+        </div>
+
+        <!-- GREEN LED (Pin 5) -->
+        <div class="bg-slate-900/90 border border-cardBorder rounded-2xl p-5 flex flex-col justify-between hover:border-emerald-500/30 transition">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-3">
+              <!-- Glowing Indicator Lamp -->
+              <div id="greenLampIndicator" class="w-8 h-8 rounded-full bg-emerald-950 border-2 border-emerald-800 flex items-center justify-center transition-all duration-300">
+                <i class="fa-solid fa-lightbulb text-emerald-700 text-sm" id="greenLampIcon"></i>
+              </div>
+              <div>
+                <h3 class="text-sm font-bold text-white flex items-center gap-1.5">
+                  ไฟสีเขียว (Green LED)
+                  <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">D5</span>
+                </h3>
+                <p id="greenStatusText" class="text-xs text-slate-400">สถานะ: ปิด (OFF)</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="mt-6 flex items-center justify-between pt-4 border-t border-cardBorder/60">
+            <span class="text-xs text-slate-400 font-medium">สลับสถานะเปิด-ปิด</span>
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input type="checkbox" id="greenToggle" onchange="toggleSingleLed('green', this.checked)" class="sr-only peer">
+              <div class="w-12 h-6 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500"></div>
+            </label>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Realtime Chart Section -->
+    <div class="bg-cardBg border border-cardBorder rounded-2xl p-6 shadow-sm">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+        <div>
+          <h2 class="text-base font-bold text-white flex items-center gap-2">
+            <i class="fa-solid fa-chart-line text-brand-400"></i> กราฟข้อมูลย้อนหลัง (Telemetry History)
+          </h2>
+          <p class="text-xs text-slate-400">อัปเดตแบบเรียลไทม์ตามแพ็กเกจที่ส่งจาก ESP32 (บันทึก 20 จุดล่าสุด)</p>
+        </div>
+        <div class="flex items-center gap-3 text-xs">
+          <span class="inline-flex items-center gap-1.5 text-orange-400 font-medium">
+            <span class="w-2.5 h-2.5 rounded-full bg-orange-400"></span> Temp (°C)
+          </span>
+          <span class="inline-flex items-center gap-1.5 text-sky-400 font-medium">
+            <span class="w-2.5 h-2.5 rounded-full bg-sky-400"></span> Humidity (%)
+          </span>
+        </div>
+      </div>
+
+      <div class="relative w-full h-[280px] sm:h-[320px]">
+        <canvas id="telemetryChart"></canvas>
+      </div>
+    </div>
+
+    <!-- Live Event Log Stream (Console Style) -->
+    <div class="bg-cardBg border border-cardBorder rounded-2xl overflow-hidden shadow-sm">
+      <div class="p-4 border-b border-cardBorder flex items-center justify-between bg-slate-900/60">
+        <div class="flex items-center gap-2.5">
+          <div class="flex gap-1.5">
+            <span class="w-3 h-3 rounded-full bg-rose-500/80 inline-block"></span>
+            <span class="w-3 h-3 rounded-full bg-amber-500/80 inline-block"></span>
+            <span class="w-3 h-3 rounded-full bg-emerald-500/80 inline-block"></span>
+          </div>
+          <span class="text-xs font-semibold text-slate-300 font-mono ml-2">MQTT Real-time Stream Console</span>
+        </div>
+        <button onclick="clearLogs()" class="text-xs text-slate-400 hover:text-white px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 transition">
+          <i class="fa-solid fa-trash-can mr-1"></i> ล้าง Log
+        </button>
+      </div>
+      <div id="consoleLog" class="p-4 font-mono text-xs text-slate-300 h-44 overflow-y-auto space-y-1.5 custom-scrollbar bg-slate-950/70">
+        <div class="text-slate-500 italic">[System] เริ่มต้นแดสบอร์ด กำลังเชื่อมต่อไปยัง HiveMQ Cloud...</div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- Modal Configuration Drawer -->
+  <div id="configModal" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-cardBg border border-cardBorder w-full max-w-md rounded-2xl p-6 shadow-2xl relative">
+      <div class="flex items-center justify-between pb-4 border-b border-cardBorder">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <i class="fa-solid fa-gear text-brand-400"></i> ตั้งค่า HiveMQ Cloud WebSocket
+        </h3>
+        <button onclick="toggleConfigModal()" class="text-slate-400 hover:text-white">
+          <i class="fa-solid fa-xmark text-lg"></i>
+        </button>
+      </div>
+
+      <form id="configForm" onsubmit="saveAndReconnect(event)" class="mt-4 space-y-3.5 text-xs">
+        <div>
+          <label class="block text-slate-400 mb-1">Host (WebSocket URL)</label>
+          <input type="text" id="cfgHost" class="w-full bg-slate-900 border border-cardBorder rounded-lg px-3 py-2 text-white focus:outline-none focus:border-brand-500 font-mono" required>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-slate-400 mb-1">Port (WSS)</label>
+            <input type="number" id="cfgPort" class="w-full bg-slate-900 border border-cardBorder rounded-lg px-3 py-2 text-white focus:outline-none focus:border-brand-500 font-mono" required>
+          </div>
+          <div>
+            <label class="block text-slate-400 mb-1">Path</label>
+            <input type="text" id="cfgPath" class="w-full bg-slate-900 border border-cardBorder rounded-lg px-3 py-2 text-white focus:outline-none focus:border-brand-500 font-mono" required>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-slate-400 mb-1">Username</label>
+            <input type="text" id="cfgUser" class="w-full bg-slate-900 border border-cardBorder rounded-lg px-3 py-2 text-white focus:outline-none focus:border-brand-500 font-mono" required>
+          </div>
+          <div>
+            <label class="block text-slate-400 mb-1">Password</label>
+            <input type="password" id="cfgPass" class="w-full bg-slate-900 border border-cardBorder rounded-lg px-3 py-2 text-white focus:outline-none focus:border-brand-500 font-mono" required>
+          </div>
+        </div>
+        <div>
+          <label class="block text-slate-400 mb-1">Telemetry Topic (Subscribe)</label>
+          <input type="text" id="cfgSubTopic" class="w-full bg-slate-900 border border-cardBorder rounded-lg px-3 py-2 text-white focus:outline-none focus:border-brand-500 font-mono" required>
+        </div>
+        <div>
+          <label class="block text-slate-400 mb-1">Command Topic (Publish)</label>
+          <input type="text" id="cfgPubTopic" class="w-full bg-slate-900 border border-cardBorder rounded-lg px-3 py-2 text-white focus:outline-none focus:border-brand-500 font-mono" required>
+        </div>
+
+        <div class="pt-3 flex gap-2">
+          <button type="submit" class="w-full py-2.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white font-semibold transition">
+            บันทึกและเชื่อมต่อใหม่
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Dashboard JavaScript Logic -->
+  <script>
+    // ข้อมูลเชื่อมต่อ HiveMQ Cloud ตามที่คุณระบุ
+    const DEFAULT_CONFIG = {
+      host: '7de6d98045034c53b791c1436e2dfa85.s1.eu.hivemq.cloud',
+      port: 8884,
+      path: '/mqtt',
+      username: 'Pee123',
+      password: 'Aa123456',
+      subTopic: 'home/esp32/sensors',
+      pubTopic: 'home/esp32/command'
+    };
+
+    let config = JSON.parse(localStorage.getItem('hivemq_dash_config')) || DEFAULT_CONFIG;
+
+    let mqttClient = null;
+    let telemetryChart = null;
+    const maxDataPoints = 20;
+    const chartLabels = [];
+    const tempData = [];
+    const humData = [];
+
+    // --- กราฟ Chart.js ---
+    function initChart() {
+      const ctx = document.getElementById('telemetryChart').getContext('2d');
+      telemetryChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: chartLabels,
+          datasets: [
+            {
+              label: 'อุณหภูมิ (°C)',
+              data: tempData,
+              borderColor: '#fb923c',
+              backgroundColor: 'rgba(251, 146, 60, 0.1)',
+              borderWidth: 2.5,
+              tension: 0.35,
+              pointRadius: 3,
+              pointBackgroundColor: '#fb923c',
+              yAxisID: 'yTemp'
+            },
+            {
+              label: 'ความชื้น (%)',
+              data: humData,
+              borderColor: '#38bdf8',
+              backgroundColor: 'rgba(56, 189, 248, 0.08)',
+              borderWidth: 2.5,
+              tension: 0.35,
+              pointRadius: 3,
+              pointBackgroundColor: '#38bdf8',
+              yAxisID: 'yHum'
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: {
+            mode: 'index',
+            intersect: false,
+          },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              backgroundColor: '#1f2937',
+              titleColor: '#f9fafb',
+              bodyColor: '#e5e7eb',
+              borderColor: '#374151',
+              borderWidth: 1,
+              padding: 10
+            }
+          },
+          scales: {
+            x: {
+              grid: { color: 'rgba(55, 65, 81, 0.3)' },
+              ticks: { color: '#9ca3af', font: { size: 10 } }
+            },
+            yTemp: {
+              type: 'linear',
+              position: 'left',
+              title: { display: true, text: 'Temp (°C)', color: '#fb923c', font: { size: 11 } },
+              grid: { color: 'rgba(55, 65, 81, 0.2)' },
+              ticks: { color: '#fb923c', font: { size: 10 } },
+              suggestedMin: 20,
+              suggestedMax: 40
+            },
+            yHum: {
+              type: 'linear',
+              position: 'right',
+              title: { display: true, text: 'Humidity (%)', color: '#38bdf8', font: { size: 11 } },
+              grid: { drawOnChartArea: false },
+              ticks: { color: '#38bdf8', font: { size: 10 } },
+              suggestedMin: 30,
+              suggestedMax: 90
+            }
+          }
+        }
+      });
+    }
+
+    // --- เชื่อมต่อ MQTT ผ่าน WebSocket (WSS) ---
+    function connectMQTT() {
+      updateStatus('connecting', 'Connecting...');
+      logMessage(`กำลังเชื่อมต่อไปยัง wss://${config.host}:${config.port}${config.path}`);
+
+      const clientId = 'WebDashboard_' + Math.random().toString(16).substring(2, 10);
+      const url = `wss://${config.host}:${config.port}${config.path}`;
+
+      const options = {
+        clientId: clientId,
+        username: config.username,
+        password: config.password,
+        clean: true,
+        reconnectPeriod: 4000,
+        connectTimeout: 20000,
+        rejectUnauthorized: false
+      };
+
+      if (mqttClient) {
+        mqttClient.end(true);
+      }
+
+      mqttClient = mqtt.connect(url, options);
+
+      mqttClient.on('connect', () => {
+        updateStatus('connected', 'Connected');
+        logMessage(`เชื่อมต่อ HiveMQ Cloud สำเร็จ! [Client ID: ${clientId}]`);
+
+        mqttClient.subscribe(config.subTopic, { qos: 0 }, (err) => {
+          if (!err) {
+            logMessage(`Subscribed สำเร็จ: ${config.subTopic}`);
+          } else {
+            logMessage(`Subscribe ผิดพลาด: ${err.message}`, 'error');
+          }
+        });
+      });
+
+      mqttClient.on('message', (topic, payload) => {
+        const msgStr = payload.toString();
+        logMessage(`[${topic}] ${msgStr}`, 'incoming');
+
+        if (topic === config.subTopic) {
+          handleIncomingTelemetry(msgStr);
+        }
+      });
+
+      mqttClient.on('error', (err) => {
+        updateStatus('disconnected', 'Error');
+        logMessage(`MQTT Error: ${err.message}`, 'error');
+      });
+
+      mqttClient.on('close', () => {
+        updateStatus('disconnected', 'Disconnected');
+      });
+
+      mqttClient.on('reconnect', () => {
+        updateStatus('connecting', 'Reconnecting...');
+        logMessage('กำลังเชื่อมต่อใหม่...');
+      });
+    }
+
+    // --- ประมวลผลข้อมูล Telemetry จาก ESP32 ---
+    function handleIncomingTelemetry(jsonString) {
+      try {
+        const data = JSON.parse(jsonString);
+        const now = new Date();
+        const timeLabel = now.toTimeString().split(' ')[0];
+
+        // 1. อัปเดตอุณหภูมิ
+        if (data.temp !== undefined) {
+          const temp = parseFloat(data.temp).toFixed(1);
+          document.getElementById('tempValue').innerText = temp;
+          document.getElementById('tempBar').style.width = `${Math.min(Math.max((temp / 50) * 100, 0), 100)}%`;
+          
+          let tempDesc = 'ปกติ';
+          if (temp >= 35) tempDesc = 'อากาศร้อน';
+          else if (temp < 25) tempDesc = 'อากาศเย็น';
+          document.getElementById('tempStatus').innerText = tempDesc;
+        }
+
+        // 2. อัปเดตความชื้น
+        if (data.hum !== undefined) {
+          const hum = parseFloat(data.hum).toFixed(1);
+          document.getElementById('humValue').innerText = hum;
+          document.getElementById('humBar').style.width = `${Math.min(Math.max(hum, 0), 100)}%`;
+
+          let humDesc = 'สบายตัว';
+          if (hum >= 70) humDesc = 'ความชื้นสูง';
+          else if (hum <= 40) humDesc = 'อากาศแห้ง';
+          document.getElementById('humStatus').innerText = humDesc;
+        }
+
+        // 3. อัปเดต Wi-Fi RSSI
+        if (data.rssi !== undefined) {
+          const rssi = parseInt(data.rssi);
+          document.getElementById('rssiValue').innerText = rssi;
+          
+          let quality = 0;
+          let label = 'ไม่มีสัญญาณ';
+          if (rssi >= -50) { quality = 100; label = 'ยอดเยี่ยม'; }
+          else if (rssi >= -65) { quality = 80; label = 'ดีมาก'; }
+          else if (rssi >= -75) { quality = 60; label = 'ปานกลาง'; }
+          else if (rssi >= -85) { quality = 35; label = 'ค่อนข้างอ่อน'; }
+          else { quality = 15; label = 'อ่อนมาก'; }
+
+          document.getElementById('rssiBar').style.width = `${quality}%`;
+          document.getElementById('wifiStatus').innerText = label;
+        }
+
+        // 4. อัปเดตสถานะหลอดไฟ LED ทั้ง 3 สี
+        if (data.red !== undefined) {
+          updateLedUI('red', data.red === 1 || data.red === true);
+        }
+        if (data.yellow !== undefined) {
+          updateLedUI('yellow', data.yellow === 1 || data.yellow === true);
+        }
+        if (data.green !== undefined) {
+          updateLedUI('green', data.green === 1 || data.green === true);
+        }
+
+        // 5. อัปเดตสถานะ Online & Last Seen
+        document.getElementById('lastSeen').innerText = timeLabel;
+        const onlineBadge = document.getElementById('deviceOnlineBadge');
+        onlineBadge.innerText = 'Online (ทำงานปกติ)';
+        onlineBadge.className = 'px-2.5 py-1 text-sm font-semibold rounded-lg bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
+
+        // 6. อัปเดตกราฟเส้น
+        if (telemetryChart && data.temp !== undefined && data.hum !== undefined) {
+          if (chartLabels.length >= maxDataPoints) {
+            chartLabels.shift();
+            tempData.shift();
+            humData.shift();
+          }
+          chartLabels.push(timeLabel);
+          tempData.push(data.temp);
+          humData.push(data.hum);
+          telemetryChart.update();
+        }
+
+      } catch (e) {
+        logMessage(`ข้อผิดพลาดการแปลง JSON: ${e.message}`, 'error');
+      }
+    }
+
+    // --- อัปเดต Visual Lamp & Toggle Switch ของแต่ละดวง ---
+    function updateLedUI(color, isOn) {
+      const toggle = document.getElementById(`${color}Toggle`);
+      const statusText = document.getElementById(`${color}StatusText`);
+      const lamp = document.getElementById(`${color}LampIndicator`);
+      const icon = document.getElementById(`${color}LampIcon`);
+
+      toggle.checked = isOn;
+      statusText.innerText = isOn ? 'สถานะ: เปิดทำงาน (ON)' : 'สถานะ: ปิด (OFF)';
+      statusText.className = isOn ? 'text-xs font-semibold text-white' : 'text-xs text-slate-400';
+
+      if (color === 'red') {
+        if (isOn) {
+          lamp.className = 'w-8 h-8 rounded-full bg-red-600 border-2 border-red-300 lamp-glow-red flex items-center justify-center transition-all duration-300';
+          icon.className = 'fa-solid fa-lightbulb text-white text-sm';
+        } else {
+          lamp.className = 'w-8 h-8 rounded-full bg-red-950 border-2 border-red-800 flex items-center justify-center transition-all duration-300';
+          icon.className = 'fa-solid fa-lightbulb text-red-700 text-sm';
+        }
+      } else if (color === 'yellow') {
+        if (isOn) {
+          lamp.className = 'w-8 h-8 rounded-full bg-amber-400 border-2 border-amber-200 lamp-glow-yellow flex items-center justify-center transition-all duration-300';
+          icon.className = 'fa-solid fa-lightbulb text-white text-sm';
+        } else {
+          lamp.className = 'w-8 h-8 rounded-full bg-amber-950 border-2 border-amber-800 flex items-center justify-center transition-all duration-300';
+          icon.className = 'fa-solid fa-lightbulb text-amber-700 text-sm';
+        }
+      } else if (color === 'green') {
+        if (isOn) {
+          lamp.className = 'w-8 h-8 rounded-full bg-emerald-500 border-2 border-emerald-200 lamp-glow-green flex items-center justify-center transition-all duration-300';
+          icon.className = 'fa-solid fa-lightbulb text-white text-sm';
+        } else {
+          lamp.className = 'w-8 h-8 rounded-full bg-emerald-950 border-2 border-emerald-800 flex items-center justify-center transition-all duration-300';
+          icon.className = 'fa-solid fa-lightbulb text-emerald-700 text-sm';
+        }
+      }
+    }
+
+    // --- ส่งคำสั่งควบคุมไปยัง ESP32 ---
+    function sendCommand(cmd) {
+      if (!mqttClient || !mqttClient.connected) {
+        logMessage('ไม่สามารถส่งคำสั่งได้: ขาดการเชื่อมต่อกับ Broker', 'error');
+        return;
+      }
+      mqttClient.publish(config.pubTopic, cmd, { qos: 0 });
+      logMessage(`ส่งคำสั่ง -> [${config.pubTopic}]: ${cmd}`, 'outgoing');
+    }
+
+    // ควบคุมรายดวง
+    function toggleSingleLed(color, isChecked) {
+      let command = '';
+      if (color === 'red') command = isChecked ? 'RED_ON' : 'RED_OFF';
+      else if (color === 'yellow') command = isChecked ? 'YELLOW_ON' : 'YELLOW_OFF';
+      else if (color === 'green') command = isChecked ? 'GREEN_ON' : 'GREEN_OFF';
+      sendCommand(command);
+    }
+
+    // สั่งเปิดหรือปิดพร้อมกันทั้งหมด
+    function sendAllLeds(action) {
+      sendCommand(action);
+    }
+
+    // --- อัปเดต Badge แสดงสถานะการเชื่อมต่อ ---
+    function updateStatus(state, text) {
+      const badge = document.getElementById('statusBadge');
+      const dot = document.getElementById('statusDot');
+      const ping = document.getElementById('pingDot');
+      const txt = document.getElementById('statusText');
+
+      txt.innerText = text;
+
+      if (state === 'connected') {
+        badge.className = 'flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-medium';
+        dot.className = 'relative inline-flex rounded-full h-2 w-2 bg-emerald-500';
+        ping.className = 'animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75';
+      } else if (state === 'connecting') {
+        badge.className = 'flex items-center gap-2 px-3 py-1.5 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-medium';
+        dot.className = 'relative inline-flex rounded-full h-2 w-2 bg-amber-500';
+        ping.className = 'animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75';
+      } else {
+        badge.className = 'flex items-center gap-2 px-3 py-1.5 rounded-full bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs font-medium';
+        dot.className = 'relative inline-flex rounded-full h-2 w-2 bg-rose-500';
+        ping.className = 'hidden';
+      }
+    }
+
+    // --- พิมพ์ Log ลงหน้า Console ---
+    function logMessage(msg, type = 'info') {
+      const consoleEl = document.getElementById('consoleLog');
+      const time = new Date().toLocaleTimeString();
+      let color = 'text-slate-300';
+      
+      if (type === 'incoming') color = 'text-emerald-400';
+      if (type === 'outgoing') color = 'text-brand-400 font-semibold';
+      if (type === 'error') color = 'text-rose-400';
+
+      const logItem = document.createElement('div');
+      logItem.className = `${color} text-[11px] leading-relaxed break-all`;
+      logItem.innerHTML = `<span class="text-slate-500">[${time}]</span> ${msg}`;
+      consoleEl.appendChild(logItem);
+      consoleEl.scrollTop = consoleEl.scrollHeight;
+    }
+
+    function clearLogs() {
+      document.getElementById('consoleLog').innerHTML = '';
+    }
+
+    // --- Modal Configuration Drawer ---
+    function toggleConfigModal() {
+      const modal = document.getElementById('configModal');
+      modal.classList.toggle('hidden');
+
+      if (!modal.classList.contains('hidden')) {
+        document.getElementById('cfgHost').value = config.host;
+        document.getElementById('cfgPort').value = config.port;
+        document.getElementById('cfgPath').value = config.path;
+        document.getElementById('cfgUser').value = config.username;
+        document.getElementById('cfgPass').value = config.password;
+        document.getElementById('cfgSubTopic').value = config.subTopic;
+        document.getElementById('cfgPubTopic').value = config.pubTopic;
+      }
+    }
+
+    function saveAndReconnect(e) {
+      e.preventDefault();
+      config = {
+        host: document.getElementById('cfgHost').value.trim(),
+        port: parseInt(document.getElementById('cfgPort').value),
+        path: document.getElementById('cfgPath').value.trim(),
+        username: document.getElementById('cfgUser').value.trim(),
+        password: document.getElementById('cfgPass').value.trim(),
+        subTopic: document.getElementById('cfgSubTopic').value.trim(),
+        pubTopic: document.getElementById('cfgPubTopic').value.trim()
+      };
+
+      localStorage.setItem('hivemq_dash_config', JSON.stringify(config));
+      toggleConfigModal();
+      logMessage('บันทึกการตั้งค่าใหม่ กำลังเชื่อมต่อซ้ำ...');
+      connectMQTT();
+    }
+
+    window.onload = function() {
+      initChart();
+      connectMQTT();
+    };
+  </script>
+</body>
+</html>
